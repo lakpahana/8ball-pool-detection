@@ -214,8 +214,17 @@ class PoolBallTracker:
         # lower_green = np.array([32, 42, 40])
         # upper_green = np.array([85, 255, 255])
         
-        lower_green = np.array([48, 39, 58])
-        upper_green = np.array([77, 255, 255])
+        
+        lower_green = np.array([56, 144, 144])
+        upper_green = np.array([63, 253, 234])
+        
+        # overhead
+        
+        # lower_green = np.array([48, 39, 58])
+        # upper_green = np.array([77, 255, 255])
+        
+        # lower_green = np.array([68, 15, 67])
+        # upper_green = np.array([82, 239, 154])
 
         # Create mask for green table
         mask = cv2.inRange(hsv, lower_green, upper_green)
