@@ -13,6 +13,7 @@ class PoolTableMapper:
         self.table_corners = None
         self.holes_2d = []
         self.sides_2d = []
+        self.table_2d = None  # Store the 2D mapped table boundary
         
         # Class mapping for table structure model (best.pt)
         self.table_class_names = {
@@ -94,10 +95,16 @@ class PoolTableMapper:
             return frame
         return cv2.warpPerspective(frame, self.transform_matrix, (self.plane_width, self.plane_height))
     
-    def transform_detections_to_2d(self, detections):
+    def transform_detections_to_2d(self, detections, update_static_table=False):
         """Transform all detections to 2D plane coordinates"""
         if self.transform_matrix is None:
             return detections
+        
+        # Only clear and update table structure if explicitly requested
+        if update_static_table:
+            self.holes_2d = []
+            self.sides_2d = []
+            self.table_2d = None
         
         transformed_detections = []
         
@@ -106,6 +113,7 @@ class PoolTableMapper:
             class_name = detection['class_name']
             confidence = detection['confidence']
             box = detection['box']
+            detection_type = detection.get('type', 'unknown')  # Preserve the type field
             
             # Get center point and corners of bounding box
             x1, y1, x2, y2 = box
@@ -124,15 +132,46 @@ class PoolTableMapper:
                 np.max(x_coords), np.max(y_coords)
             ]
             
-            transformed_detections.append({
+            transformed_detection = {
                 'class_id': class_id,
                 'class_name': class_name,
                 'confidence': confidence,
                 'box': new_box,
                 'center_2d': center_2d,
                 'corners_2d': corners_2d,
-                'original_box': box
-            })
+                'original_box': box,
+                'type': detection_type  # Include the type field
+            }
+            
+            # Copy track_id if it exists (for balls)
+            if 'track_id' in detection:
+                transformed_detection['track_id'] = detection['track_id']
+            
+            transformed_detections.append(transformed_detection)
+            
+            # Store table structure components in 2D only if updating static table
+            if update_static_table:
+                if class_name == 'pool-table':
+                    self.table_2d = {
+                        'box': new_box,
+                        'center': center_2d.tolist(),
+                        'corners': corners_2d.tolist(),
+                        'confidence': confidence
+                    }
+                elif class_name == 'pool-table-hole':
+                    self.holes_2d.append({
+                        'box': new_box,
+                        'center': center_2d.tolist(),
+                        'corners': corners_2d.tolist(),
+                        'confidence': confidence
+                    })
+                elif class_name == 'pool-table-side':
+                    self.sides_2d.append({
+                        'box': new_box,
+                        'center': center_2d.tolist(),
+                        'corners': corners_2d.tolist(),
+                        'confidence': confidence
+                    })
         
         return transformed_detections
 
@@ -259,6 +298,7 @@ class PoolTableTracker:
         
         frame_count = 0
         transform_setup = False
+        table_structure_setup = False  # Track if static table structure is set up
         
         while True:
             ret, frame = cap.read()
@@ -287,13 +327,20 @@ class PoolTableTracker:
                     transform_setup = True
                     print(f"Table mapping setup from frame {frame_count}")
             
+            # Setup static table structure (only once after transform is ready)
+            if transform_setup and not table_structure_setup and len(table_detections) > 0:
+                # Transform table structure detections and update static storage
+                self.mapper.transform_detections_to_2d(table_detections, update_static_table=True)
+                table_structure_setup = True
+                print(f"Static table structure mapped: Table={'✓' if self.mapper.table_2d else '✗'}, Holes={len(self.mapper.holes_2d)}, Sides={len(self.mapper.sides_2d)}")
+            
             # Combine all detections
             all_detections = table_detections + ball_detections
             
-            # Transform detections to 2D if setup is complete
+            # Transform detections to 2D if setup is complete (but don't update static table)
             transformed_detections = []
             if transform_setup:
-                transformed_detections = self.mapper.transform_detections_to_2d(all_detections)
+                transformed_detections = self.mapper.transform_detections_to_2d(all_detections, update_static_table=False)
             
             # Store frame data
             frame_data = {
@@ -451,8 +498,11 @@ class PoolTableTracker:
         return annotated_frame
     
     def draw_2d_plane(self, detections_2d, frame_count):
-        """Draw 2D plane view with mapped detections and ball trails"""
+        """Draw 2D plane view with static table structure and dynamic ball positions"""
         plane = np.zeros((self.mapper.plane_height, self.mapper.plane_width, 3), dtype=np.uint8)
+        
+        # Draw a dark green background for the table playing area
+        cv2.rectangle(plane, (0, 0), (self.mapper.plane_width, self.mapper.plane_height), (0, 50, 0), -1)
         
         # Color mapping for different object types
         table_colors = {
@@ -476,7 +526,48 @@ class PoolTableTracker:
             'ball9': (255, 255, 0),   # Yellow stripe
         }
         
-        # Draw ball trails first (so they appear behind current positions)
+        # ===== DRAW STATIC TABLE STRUCTURE FIRST =====
+        
+        # Draw pool table boundary (from static storage)
+        if self.mapper.table_2d is not None:
+            box = self.mapper.table_2d['box']
+            x1, y1, x2, y2 = [int(x) for x in box]
+            x1 = max(0, min(x1, self.mapper.plane_width-1))
+            y1 = max(0, min(y1, self.mapper.plane_height-1))
+            x2 = max(0, min(x2, self.mapper.plane_width-1))
+            y2 = max(0, min(y2, self.mapper.plane_height-1))
+            
+            # Draw table outline with thicker border
+            cv2.rectangle(plane, (x1, y1), (x2, y2), table_colors['pool-table'], 3)
+            # Fill with semi-transparent green
+            overlay = plane.copy()
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 80, 0), -1)
+            cv2.addWeighted(overlay, 0.3, plane, 0.7, 0, plane)
+        
+        # Draw sides (from static storage)
+        for side in self.mapper.sides_2d:
+            box = side['box']
+            x1, y1, x2, y2 = [int(x) for x in box]
+            x1 = max(0, min(x1, self.mapper.plane_width-1))
+            y1 = max(0, min(y1, self.mapper.plane_height-1))
+            x2 = max(0, min(x2, self.mapper.plane_width-1))
+            y2 = max(0, min(y2, self.mapper.plane_height-1))
+            
+            # Draw sides as filled rectangles with border
+            cv2.rectangle(plane, (x1, y1), (x2, y2), table_colors['pool-table-side'], -1)  # Filled
+            cv2.rectangle(plane, (x1, y1), (x2, y2), (200, 200, 200), 1)  # Border
+        
+        # Draw holes (from static storage)
+        for hole in self.mapper.holes_2d:
+            center = hole['center']
+            center_x = max(0, min(int(center[0]), self.mapper.plane_width-1))
+            center_y = max(0, min(int(center[1]), self.mapper.plane_height-1))
+            
+            # Draw holes as larger filled circles with border
+            cv2.circle(plane, (center_x, center_y), 15, (0, 0, 0), -1)  # Black hole
+            cv2.circle(plane, (center_x, center_y), 15, table_colors['pool-table-hole'], 2)  # Red border
+        
+        # ===== DRAW DYNAMIC BALL TRAILS =====
         for track_id, track_data in self.ball_tracks.items():
             if len(track_data['positions']) < 2:
                 continue
@@ -506,13 +597,18 @@ class PoolTableTracker:
                 trail_color = tuple([int(c * alpha * 0.7) for c in color])  # Dimmer for trails
                 cv2.line(plane, pt1, pt2, trail_color, 2)
         
-        # Draw current detections
+        # ===== DRAW CURRENT DYNAMIC DETECTIONS (BALLS, FLAGS, RODS) =====
         for detection in detections_2d:
             class_name = detection['class_name']
+            detection_type = detection.get('type', 'unknown')
+            
+            # Skip table structure detections since they're already drawn statically
+            if detection_type == 'table':
+                continue
+            
             confidence = detection['confidence']
             box = detection['box']
             center_2d = detection['center_2d']
-            detection_type = detection.get('type', 'unknown')
             
             x1, y1, x2, y2 = [int(x) for x in box]
             
@@ -525,48 +621,33 @@ class PoolTableTracker:
             center_x = max(0, min(int(center_2d[0]), self.mapper.plane_width-1))
             center_y = max(0, min(int(center_2d[1]), self.mapper.plane_height-1))
             
-            # Choose color and draw based on detection type
-            if detection_type == 'table':
-                color = table_colors.get(class_name, (255, 255, 255))
+            # Draw ball objects only (not table structure)
+            color = ball_colors.get(class_name, (0, 255, 255))
+            
+            if 'ball' in class_name or class_name in ['13', '2', 'bal14']:
+                # Draw balls as circles
+                cv2.circle(plane, (center_x, center_y), 10, color, -1)
+                cv2.circle(plane, (center_x, center_y), 10, (255, 255, 255), 2)
                 
-                if class_name == 'pool-table':
-                    # Draw table outline
-                    cv2.rectangle(plane, (x1, y1), (x2, y2), color, 2)
-                elif class_name == 'pool-table-hole':
-                    # Draw holes as filled circles
-                    cv2.circle(plane, (center_x, center_y), 12, color, -1)
-                    cv2.circle(plane, (center_x, center_y), 12, (255, 255, 255), 1)
-                elif class_name == 'pool-table-side':
-                    # Draw sides as filled rectangles
-                    cv2.rectangle(plane, (x1, y1), (x2, y2), color, -1)
-                    
-            else:  # ball_object
-                color = ball_colors.get(class_name, (0, 255, 255))
+                # Draw ball number/name
+                text = class_name.replace('ball', '')  # Remove 'ball' prefix for cleaner display
+                if text == class_name:  # If no 'ball' prefix, show first few characters
+                    text = class_name[:3]
+                cv2.putText(plane, text, (center_x-8, center_y+3), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 0), 1)
+                           
+            elif class_name == 'flag':
+                # Draw flag as triangle
+                pts = np.array([[center_x-8, center_y-8], [center_x+8, center_y], 
+                               [center_x-8, center_y+8]], np.int32)
+                cv2.fillPoly(plane, [pts], color)
+                cv2.polylines(plane, [pts], True, (255, 255, 255), 1)
                 
-                if 'ball' in class_name or class_name in ['13', '2', 'bal14']:
-                    # Draw balls as circles
-                    cv2.circle(plane, (center_x, center_y), 10, color, -1)
-                    cv2.circle(plane, (center_x, center_y), 10, (255, 255, 255), 2)
-                    
-                    # Draw ball number/name
-                    text = class_name.replace('ball', '')  # Remove 'ball' prefix for cleaner display
-                    if text == class_name:  # If no 'ball' prefix, show first few characters
-                        text = class_name[:3]
-                    cv2.putText(plane, text, (center_x-8, center_y+3), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 0), 1)
-                               
-                elif class_name == 'flag':
-                    # Draw flag as triangle
-                    pts = np.array([[center_x-8, center_y-8], [center_x+8, center_y], 
-                                   [center_x-8, center_y+8]], np.int32)
-                    cv2.fillPoly(plane, [pts], color)
-                    cv2.polylines(plane, [pts], True, (255, 255, 255), 1)
-                    
-                elif class_name == 'rod':
-                    # Draw rod as rectangle
-                    cv2.rectangle(plane, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(plane, "ROD", (center_x-15, center_y+3), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+            elif class_name == 'rod':
+                # Draw rod as rectangle
+                cv2.rectangle(plane, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(plane, "ROD", (center_x-15, center_y+3), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
         
         # Add title and frame info
         cv2.putText(plane, "2D Pool Table Mapping", (10, 25), 
@@ -574,35 +655,39 @@ class PoolTableTracker:
         cv2.putText(plane, f"Frame: {frame_count}", (10, 50), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
-        # Count detections by type
-        table_counts = {}
+        # Count only dynamic ball/object detections (skip table structure)
         ball_counts = {}
         
         for detection in detections_2d:
             class_name = detection['class_name']
             detection_type = detection.get('type', 'unknown')
             
-            if detection_type == 'table':
-                table_counts[class_name] = table_counts.get(class_name, 0) + 1
-            else:
+            if detection_type != 'table':  # Only count non-table objects
                 ball_counts[class_name] = ball_counts.get(class_name, 0) + 1
         
         y_offset = 70
         
-        # Display table structure counts
-        if table_counts:
-            cv2.putText(plane, "Table Structure:", (10, y_offset), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-            y_offset += 15
-            for class_name, count in table_counts.items():
-                color = table_colors.get(class_name, (255, 255, 255))
-                cv2.putText(plane, f"  {class_name}: {count}", (10, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, 1)
-                y_offset += 15
+        # Display static table structure info
+        cv2.putText(plane, "Static Table Structure:", (10, y_offset), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+        y_offset += 15
         
-        # Display ball/object counts
+        table_info = [
+            (f"  Table: {'✓' if self.mapper.table_2d else '✗'}", table_colors['pool-table']),
+            (f"  Holes: {len(self.mapper.holes_2d)}", table_colors['pool-table-hole']),
+            (f"  Sides: {len(self.mapper.sides_2d)}", table_colors['pool-table-side'])
+        ]
+        
+        for text, color in table_info:
+            cv2.putText(plane, text, (10, y_offset), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, 1)
+            y_offset += 15
+        
+        y_offset += 5
+        
+        # Display dynamic ball/object counts
         if ball_counts:
-            cv2.putText(plane, "Balls & Objects:", (10, y_offset), 
+            cv2.putText(plane, "Dynamic Balls & Objects:", (10, y_offset), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
             y_offset += 15
             for class_name, count in ball_counts.items():
@@ -624,6 +709,12 @@ class PoolTableTracker:
                 'total_frames': len(self.frame_detections),
                 'plane_dimensions': [self.mapper.plane_width, self.mapper.plane_height]
             },
+            'table_structure_2d': {
+                'table': self.mapper.table_2d,
+                'holes': self.mapper.holes_2d,
+                'sides': self.mapper.sides_2d
+            },
+            'ball_tracks': self.ball_tracks,
             'frames': self.frame_detections
         }
         
@@ -647,6 +738,7 @@ class PoolTableTracker:
             json.dump(output_data, f, indent=2)
         
         print("Detection data saved to 'pool_table_detection_data.json'")
+        print(f"Table structure mapped: Table={'✓' if self.mapper.table_2d else '✗'}, Holes={len(self.mapper.holes_2d)}, Sides={len(self.mapper.sides_2d)}")
 
 # Main execution
 if __name__ == "__main__":
@@ -662,5 +754,5 @@ if __name__ == "__main__":
     print("Ball Model: weights/best.pt (individual balls, flags, rods)")
     print("Output: dual_model_tracking.mp4")
     print("=" * 50)
-    
-    tracker.track_video("overhead.mp4", setup_from_first_frame=True)
+
+    tracker.track_video("tiktok4.mp4", setup_from_first_frame=True)
