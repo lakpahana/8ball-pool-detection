@@ -24,7 +24,10 @@ class PoolTableSelector:
                 
                 # Draw circle at selected point
                 cv2.circle(self.display_image, (x, y), 5, (0, 255, 0), -1)
-                cv2.putText(self.display_image, str(len(self.corners)), 
+                
+                # Label based on order
+                labels = ['TL', 'TR', 'BL', 'BR']
+                cv2.putText(self.display_image, labels[len(self.corners)-1], 
                            (x + 10, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 
                            0.7, (0, 255, 0), 2)
                 
@@ -73,11 +76,15 @@ class PoolTableSelector:
         print("INTERACTIVE POOL TABLE CORNER SELECTION")
         print("="*60)
         print("\nInstructions:")
-        print("1. Click on the 4 corners of the pool table in order")
-        print("   (e.g., top-left, top-right, bottom-right, bottom-left)")
-        print("2. Press 'c' to continue after selecting 4 corners")
-        print("3. Press 'r' to reset and start over")
-        print("4. Press 'q' to quit")
+        print("Click on the 4 corners of the pool table in THIS ORDER:")
+        print("  1. TOP-LEFT corner")
+        print("  2. TOP-RIGHT corner")
+        print("  3. BOTTOM-LEFT corner")
+        print("  4. BOTTOM-RIGHT corner")
+        print("\nControls:")
+        print("  'c' - Continue to processing (after 4 corners)")
+        print("  'r' - Reset and start over")
+        print("  'q' - Quit")
         print("="*60 + "\n")
         
         cv2.imshow('Select Pool Table Corners', self.display_image)
@@ -115,19 +122,76 @@ class PoolBallTracker:
     def __init__(self, video_path, corners):
         self.video_path = video_path
         self.corners = corners
-        self.width = 800  # Output width
-        self.height = 400  # Output height
+        self.width = 280  # Output width (matching notebook)
+        self.height = 560  # Output height (matching notebook)
         
         # Define destination points for perspective transform
+        # Matching notebook: [0,0], [width,0], [0,height], [width,height]
+        # Order: TOP-LEFT, TOP-RIGHT, BOTTOM-LEFT, BOTTOM-RIGHT
         self.dst_points = np.array([
-            [0, 0],
-            [self.width, 0],
-            [self.width, self.height],
-            [0, self.height]
+            [0, 0],              # TOP-LEFT
+            [self.width, 0],     # TOP-RIGHT
+            [0, self.height],    # BOTTOM-LEFT
+            [self.width, self.height]  # BOTTOM-RIGHT
         ], dtype=np.float32)
         
         # Calculate perspective transformation matrix
         self.matrix = cv2.getPerspectiveTransform(self.corners, self.dst_points)
+    
+    def create_table(self):
+        """Creates a 2D snooker table image with markings"""
+        # Create green table (matching notebook - BGR then convert to RGB)
+        img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        img[:, :] = [0, 180, 10]  # BGR format (notebook uses this)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Create semi-circle at the top (baulk line)
+        # The line is at height/5 and circle radius is (width/3)/2
+        cv2.circle(img, (int(self.width/2), int(self.height/5)), 
+                   int((self.width/3)/2), (50, 255, 50), -1)
+        
+        # Delete bottom half of circle by coloring green
+        img[int(self.height/5):self.height, 0:self.width] = [0, 180, 10]
+        
+        # Draw the baulk line
+        cv2.line(img, (0, int(self.height/5)), 
+                 (self.width, int(self.height/5)), (50, 255, 50), 2)
+        
+        return img
+    
+    def draw_holes(self, input_img):
+        """Draws borders and holes on 2D snooker table"""
+        color = (190, 190, 190)  # Gray color for outer circle
+        color2 = (120, 120, 120)  # Darker gray for inner circle
+        color3 = (200, 140, 0)  # Border color (brown)
+        
+        img = input_img.copy()
+        
+        # Draw borders
+        cv2.line(img, (0, 0), (self.width, 0), color3, 3)  # Top
+        cv2.line(img, (0, self.height), (self.width, self.height), color3, 3)  # Bottom
+        cv2.line(img, (0, 0), (0, self.height), color3, 3)  # Left
+        cv2.line(img, (self.width, 0), (self.width, self.height), color3, 3)  # Right
+        
+        # Draw corner pockets (larger)
+        cv2.circle(img, (0, 0), 11, color, -1)  # Top left
+        cv2.circle(img, (self.width, 0), 11, color, -1)  # Top right
+        cv2.circle(img, (0, self.height), 11, color, -1)  # Bottom left
+        cv2.circle(img, (self.width, self.height), 11, color, -1)  # Bottom right
+        
+        # Draw middle pockets (smaller)
+        cv2.circle(img, (self.width, int(self.height/2)), 8, color, -1)  # Mid right
+        cv2.circle(img, (0, int(self.height/2)), 8, color, -1)  # Mid left
+        
+        # Draw smaller inner circles for depth effect
+        cv2.circle(img, (0, 0), 9, color2, -1)
+        cv2.circle(img, (self.width, 0), 9, color2, -1)
+        cv2.circle(img, (0, self.height), 9, color2, -1)
+        cv2.circle(img, (self.width, self.height), 9, color2, -1)
+        cv2.circle(img, (self.width, int(self.height/2)), 6, color2, -1)
+        cv2.circle(img, (0, int(self.height/2)), 6, color2, -1)
+        
+        return img
         
     def get_perspective_transform(self, frame):
         """Apply perspective transformation to frame"""
@@ -138,55 +202,110 @@ class PoolBallTracker:
         # Apply Gaussian blur
         blur = cv2.GaussianBlur(frame, (5, 5), cv2.BORDER_DEFAULT)
         
-        # Convert to HSV
-        hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
+        # Convert BGR to RGB first (matching notebook)
+        blur_RGB = cv2.cvtColor(blur, cv2.COLOR_BGR2RGB)
         
-        # Define range for green table (adjust these values as needed)
-        lower_green = np.array([35, 40, 40])
-        upper_green = np.array([85, 255, 255])
+        # Convert RGB to HSV (matching notebook)
+        hsv = cv2.cvtColor(blur_RGB, cv2.COLOR_RGB2HSV)
         
+        # HSV colors of the snooker table (EXACT notebook values)
+        # lower_green = np.array([60, 200, 150])
+        # upper_green = np.array([70, 255, 240])
+        # lower_green = np.array([32, 42, 40])
+        # upper_green = np.array([85, 255, 255])
+        
+        lower_green = np.array([48, 39, 58])
+        upper_green = np.array([77, 255, 255])
+
         # Create mask for green table
         mask = cv2.inRange(hsv, lower_green, upper_green)
         
         # Morphological closing to fill holes
         kernel = np.ones((5, 5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask_closing = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         
         # Invert mask to get non-table objects (balls)
-        mask_inv = cv2.bitwise_not(mask)
+        _, mask_inv = cv2.threshold(mask_closing, 5, 255, cv2.THRESH_BINARY_INV)
         
         # Find contours
         contours, _ = cv2.findContours(mask_inv, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         
         balls = []
         
-        # Filter contours to find balls
+        # Filter contours (matching notebook's filter_ctrs)
+        min_s = 90
+        max_s = 358
+        alpha = 3.445
+        
+        
+        
         for contour in contours:
             area = cv2.contourArea(contour)
             
-            # Filter by area (adjust these values based on your video)
-            if 50 < area < 2000:
-                # Get bounding rectangle
-                x, y, w, h = cv2.boundingRect(contour)
+            # Get bounding rectangle
+            rot_rect = cv2.minAreaRect(contour)
+            w = rot_rect[1][0]
+            h = rot_rect[1][1]
+            
+            # Check aspect ratio first (matching notebook)
+            if h > 0 and w > 0:
+                if (h * alpha < w) or (w * alpha < h):
+                    continue  # Skip non-circular shapes
+            
+            # Filter by area (matching notebook)
+            if (area < min_s) or (area > max_s):
+                continue
+            
+            # Calculate centroid
+            M = cv2.moments(contour)
+            if M['m00'] != 0:
+                cX = int(M['m10'] / M['m00'])
+                cY = int(M['m01'] / M['m00'])
                 
-                # Check aspect ratio (balls should be roughly circular)
-                aspect_ratio = float(w) / h if h > 0 else 0
-                
-                if 0.7 < aspect_ratio < 1.3:  # Roughly square/circular
-                    # Calculate centroid
-                    M = cv2.moments(contour)
-                    if M['m00'] != 0:
-                        cX = int(M['m10'] / M['m00'])
-                        cY = int(M['m01'] / M['m00'])
-                        
-                        balls.append({
-                            'center': (cX, cY),
-                            'contour': contour,
-                            'area': area,
-                            'bbox': (x, y, w, h)
-                        })
+                balls.append({
+                    'center': (cX, cY),
+                    'contour': contour,
+                    'area': area,
+                    'bbox': cv2.boundingRect(contour)
+                })
         
-        return balls, mask
+        # Return both mask_inv and intermediate masks for debugging
+        return balls, mask_inv, mask, mask_closing
+    
+    def draw_balls(self, balls, frame):
+        """Draw balls on the table with their colors (matching notebook style)"""
+        K = np.ones((3, 3), np.uint8)
+        
+        final = self.create_table()
+        mask = np.zeros((self.height, self.width), np.uint8)
+        
+        # Convert frame to RGB for color extraction (matching notebook)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        for ball in balls:
+            contour = ball['contour']
+            cX, cY = ball['center']
+            
+            # Find color average inside contour (matching notebook)
+            mask[...] = 0
+            cv2.drawContours(mask, [contour], -1, 255, -1)
+            mask_eroded = cv2.erode(mask, K, iterations=3)
+            
+            # Get mean color from RGB frame (matching notebook)
+            mean_color = cv2.mean(frame_rgb, mask_eroded)
+            color = (int(mean_color[0]), int(mean_color[1]), int(mean_color[2]))
+            
+            # Draw ball (matching notebook - radius=8)
+            radius = 8
+            cv2.circle(final, (cX, cY), radius, color, -1)
+            
+            # Black border around ball (matching notebook - thickness=1)
+            cv2.circle(final, (cX, cY), radius, 0, 1)
+            
+            # Light reflection (matching notebook)
+            cv2.circle(final, (cX - 2, cY - 2), 2, (255, 255, 255), -1)
+        
+        return final
     
     def process_video(self, output_path=None):
         """Process the entire video"""
@@ -226,42 +345,54 @@ class PoolBallTracker:
             # Apply perspective transformation
             warped = self.get_perspective_transform(frame)
             
-            # Detect balls
-            balls, mask = self.detect_balls(warped)
+            # Detect balls (now returns 4 values)
+            balls, mask_inv, mask_table, mask_closing = self.detect_balls(warped)
             
-            # Draw detected balls
-            result = warped.copy()
-            for ball in balls:
-                # Draw contour
-                cv2.drawContours(result, [ball['contour']], -1, (0, 255, 0), 2)
-                
-                # Draw center
-                cv2.circle(result, ball['center'], 5, (0, 0, 255), -1)
-                
-                # Draw bounding box
-                x, y, w, h = ball['bbox']
-                cv2.rectangle(result, (x, y), (x + w, y + h), (255, 0, 0), 1)
+            # Draw table with balls (notebook style)
+            top_view = self.draw_balls(balls, warped)
+            top_view = self.draw_holes(top_view)
             
             # Add text overlay
-            cv2.putText(result, f"Balls detected: {len(balls)}", 
+            cv2.putText(top_view, f"Balls: {len(balls)}", 
                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
                        0.7, (255, 255, 255), 2)
-            cv2.putText(result, f"Frame: {frame_count}/{total_frames}", 
+            cv2.putText(top_view, f"Frame: {frame_count}/{total_frames}", 
                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 
                        0.5, (255, 255, 255), 1)
             
+            # Create debug view with detected contours
+            debug_view = warped.copy()
+            for ball in balls:
+                cv2.drawContours(debug_view, [ball['contour']], -1, (0, 255, 0), 2)
+                cv2.circle(debug_view, ball['center'], 3, (0, 0, 255), -1)
+                # Show area for debugging
+                x, y = ball['center']
+                cv2.putText(debug_view, f"{int(ball['area'])}", 
+                           (x+5, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+            
             # Write to output video
             if output_path:
-                out.write(result)
+                out.write(top_view)
             
-            # Display
-            cv2.imshow('Pool Ball Tracking', result)
-            cv2.imshow('Table Mask', mask)
+            # Create visual masks for debugging (convert to BGR for display)
+            mask_inv_visual = cv2.cvtColor(mask_inv, cv2.COLOR_GRAY2BGR)
+            mask_table_visual = cv2.cvtColor(mask_table, cv2.COLOR_GRAY2BGR)
+            mask_closing_visual = cv2.cvtColor(mask_closing, cv2.COLOR_GRAY2BGR)
+            
+            # Display multiple windows for debugging
+            cv2.imshow('1. Pool Ball Tracking - 2D Top View', top_view)
+            cv2.imshow('2. Warped View with Detections', debug_view)
+            cv2.imshow('3. Original Warped Frame', warped)
+            cv2.imshow('4. Table Mask (White = Table)', mask_table_visual)
+            cv2.imshow('5. Table Mask After Closing', mask_closing_visual)
+            cv2.imshow('6. Inverted Mask (White = Objects)', mask_inv_visual)
             
             # Progress update every 30 frames
             if frame_count % 30 == 0:
                 progress = (frame_count / total_frames) * 100
-                print(f"Progress: {progress:.1f}% ({frame_count}/{total_frames} frames)")
+                print(f"Progress: {progress:.1f}% ({frame_count}/{total_frames} frames) - Balls detected: {len(balls)}")
+                if len(balls) == 0:
+                    print("  WARNING: No balls detected! Check if table color is correct.")
             
             # Check for quit (increased wait time for better key detection)
             key = cv2.waitKey(10) & 0xFF
