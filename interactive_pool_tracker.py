@@ -20,10 +20,14 @@ class PoolTableSelector:
         """Handle mouse clicks to select corners"""
         if event == cv2.EVENT_LBUTTONDOWN:
             if len(self.corners) < 4:
-                self.corners.append([x, y])
-                print(f"Corner {len(self.corners)}/4 selected at: ({x}, {y})")
+                # Scale coordinates back to original resolution
+                original_x = int(x / self.scale_factor) if hasattr(self, 'scale_factor') else x
+                original_y = int(y / self.scale_factor) if hasattr(self, 'scale_factor') else y
                 
-                # Draw circle at selected point
+                self.corners.append([original_x, original_y])
+                print(f"Corner {len(self.corners)}/4 selected at: ({original_x}, {original_y}) [original resolution]")
+                
+                # Draw circle at selected point (using display coordinates)
                 cv2.circle(self.display_image, (x, y), 5, (0, 255, 0), -1)
                 
                 # Label based on order
@@ -65,11 +69,29 @@ class PoolTableSelector:
             print("Error: Could not read first frame")
             return None
         
+        # Store original frame size
+        self.original_height, self.original_width = frame.shape[:2]
+        
+        # Scale down image if too large for display
+        max_display_height = 900
+        max_display_width = 1600
+        
+        if self.original_height > max_display_height or self.original_width > max_display_width:
+            scale = min(max_display_height / self.original_height, max_display_width / self.original_width)
+            new_width = int(self.original_width * scale)
+            new_height = int(self.original_height * scale)
+            frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+            self.scale_factor = scale
+            print(f"Video resolution: {self.original_width}x{self.original_height}")
+            print(f"Display resolution: {new_width}x{new_height} (scaled to fit screen)")
+        else:
+            self.scale_factor = 1.0
+        
         self.image = frame.copy()
         self.display_image = frame.copy()
         
         # Create window and set mouse callback
-        cv2.namedWindow('Select Pool Table Corners')
+        cv2.namedWindow('Select Pool Table Corners', cv2.WINDOW_NORMAL)
         cv2.setMouseCallback('Select Pool Table Corners', self.mouse_callback)
         
         # Instructions
@@ -246,8 +268,8 @@ class PoolBallTracker:
         # upper_green = np.array([85, 255, 255])
         
         
-        lower_green = np.array([56, 144, 144])
-        upper_green = np.array([63, 253, 234])
+        # lower_green = np.array([56, 144, 144])
+        # upper_green = np.array([63, 253, 234])
         
         # overhead
         
@@ -256,6 +278,10 @@ class PoolBallTracker:
         
         # lower_green = np.array([68, 15, 67])
         # upper_green = np.array([82, 239, 154])
+
+
+        lower_green = np.array([48, 109, 91])
+        upper_green = np.array([55, 226, 189])
 
         # Create mask for green table
         mask = cv2.inRange(hsv, lower_green, upper_green)
@@ -419,13 +445,26 @@ class PoolBallTracker:
             mask_table_visual = cv2.cvtColor(mask_table, cv2.COLOR_GRAY2BGR)
             mask_closing_visual = cv2.cvtColor(mask_closing, cv2.COLOR_GRAY2BGR)
             
-            # Display multiple windows for debugging
-            cv2.imshow('1. Pool Ball Tracking - 2D Top View', top_view)
-            cv2.imshow('2. Warped View with Detections', debug_view)
-            cv2.imshow('3. Original Warped Frame', warped)
-            cv2.imshow('4. Table Mask (White = Table)', mask_table_visual)
-            cv2.imshow('5. Table Mask After Closing', mask_closing_visual)
-            cv2.imshow('6. Inverted Mask (White = Objects)', mask_inv_visual)
+            # Resize images to fit screen (scale down if larger than 800px in any dimension)
+            max_display_height = 800
+            max_display_width = 800
+            
+            def resize_for_display(img, max_h=max_display_height, max_w=max_display_width):
+                h, w = img.shape[:2]
+                if h > max_h or w > max_w:
+                    scale = min(max_h / h, max_w / w)
+                    new_w = int(w * scale)
+                    new_h = int(h * scale)
+                    return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                return img
+            
+            # Display multiple windows for debugging (all resized to fit screen)
+            cv2.imshow('1. Pool Ball Tracking - 2D Top View', resize_for_display(top_view))
+            cv2.imshow('2. Warped View with Detections', resize_for_display(debug_view))
+            cv2.imshow('3. Original Warped Frame', resize_for_display(warped))
+            cv2.imshow('4. Table Mask (White = Table)', resize_for_display(mask_table_visual))
+            cv2.imshow('5. Table Mask After Closing', resize_for_display(mask_closing_visual))
+            cv2.imshow('6. Inverted Mask (White = Objects)', resize_for_display(mask_inv_visual))
             
             # Progress update every 30 frames
             if frame_count % 30 == 0:
