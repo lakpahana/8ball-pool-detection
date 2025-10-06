@@ -7,6 +7,7 @@ then applies perspective transformation and processes the video.
 import cv2
 import numpy as np
 import sys
+from ultralytics import YOLO
 
 class PoolTableSelector:
     def __init__(self, video_path):
@@ -124,6 +125,7 @@ class PoolBallTracker:
         self.corners = corners
         self.width = 280  # Output width (matching notebook)
         self.height = 560  # Output height (matching notebook)
+        self.model = YOLO("weights/best.pt")
         
         # Define destination points for perspective transform
         # Matching notebook: [0,0], [width,0], [0,height], [width,height]
@@ -196,6 +198,35 @@ class PoolBallTracker:
     def get_perspective_transform(self, frame):
         """Apply perspective transformation to frame"""
         return cv2.warpPerspective(frame, self.matrix, (self.width, self.height))
+    
+    def detect_balls_from_yolo(self, frame):
+        """
+        Detect balls using YOLO model and print detected ball names and bounding boxes.
+        """
+        detect = self.model.track(frame, persist=True, verbose=False)
+        # detect.boxes: ultralytics.engine.results.Boxes object
+        # detect.names: dict mapping class indices to ball names
+
+        if hasattr(detect, 'boxes') and detect.boxes is not None:
+            boxes = detect.boxes
+            names = detect.names
+            # boxes.xyxy: (N, 4) array of bounding boxes [x1, y1, x2, y2]
+            # boxes.cls: (N,) array of class indices
+            # boxes.conf: (N,) array of confidences
+
+            xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy
+            cls = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
+            conf = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf
+
+            print(f"YOLO detected {len(xyxy)} balls:")
+            for i in range(len(xyxy)):
+                class_idx = int(cls[i])
+                ball_name = names.get(class_idx, f"class_{class_idx}")
+                bbox = xyxy[i]
+                confidence = conf[i] if conf is not None else None
+                print(f"  Ball: {ball_name}, BBox: {bbox}, Confidence: {confidence:.2f}" if confidence is not None else f"  Ball: {ball_name}, BBox: {bbox}")
+        else:
+            print("No YOLO ball detections found.")
     
     def detect_balls(self, frame):
         """Detect balls on the table using color segmentation"""
@@ -356,7 +387,7 @@ class PoolBallTracker:
             
             # Detect balls (now returns 4 values)
             balls, mask_inv, mask_table, mask_closing = self.detect_balls(warped)
-            
+            # self.detect_balls_from_yolo(frame)
             # Draw table with balls (notebook style)
             top_view = self.draw_balls(balls, warped)
             top_view = self.draw_holes(top_view)
