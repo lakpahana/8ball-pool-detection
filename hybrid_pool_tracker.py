@@ -281,8 +281,14 @@ class HybridPoolBallTracker:
         hsv = cv2.cvtColor(blur_RGB, cv2.COLOR_RGB2HSV)
         
         # HSV colors of the snooker table
-        lower_green = np.array([48, 109, 91])
-        upper_green = np.array([55, 226, 189])
+        #pool-game2
+        # lower_green = np.array([48, 109, 91])
+        # upper_green = np.array([55, 226, 189])
+        
+        #trafck
+        lower_green = np.array([56, 144, 144])
+        upper_green = np.array([63, 253, 234])
+        
         
         # Create mask for green table
         mask = cv2.inRange(hsv, lower_green, upper_green)
