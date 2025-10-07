@@ -153,6 +153,23 @@ class HybridPoolBallTracker:
         print(f"Loading YOLO model with confidence threshold: {self.yolo_confidence}")
         self.model = YOLO("weights/best.pt")
         
+        # Define ball colors mapping (RGB format)
+        self.ball_colors = {
+            'flag': (255, 255, 0),      # Yellow
+            'rod': (128, 0, 128),       # Purple
+            # Ball colors - different colors for different balls
+            'ball0': (255, 255, 255),   # White (cue ball)
+            'ball1': (255, 255, 0),     # Yellow/Orange (1-ball)
+            'ball2': (0, 0, 255),       # Blue (2-ball)
+            'ball3': (255, 0, 0),       # Red (3-ball)
+            'ball4': (128, 0, 128),     # Purple (4-ball)
+            'ball5': (255, 165, 0),     # Orange (5-ball)
+            'ball6': (0, 128, 0),       # Green (6-ball)
+            'ball7': (128, 0, 0),       # Maroon (7-ball)
+            'ball8': (0, 0, 0),         # Black (8-ball)
+            'ball9': (255, 255, 0),     # Yellow stripe (9-ball)
+        }
+        
         # Define destination points for perspective transform
         self.dst_points = np.array([
             [0, 0],              # TOP-LEFT
@@ -390,40 +407,14 @@ class HybridPoolBallTracker:
             cX, cY = ball['center']
             source = ball.get('source', 'unknown')
             
-            # Extract color differently based on detection source
+            # Determine ball color
             if source == 'yolo':
-                # For YOLO detections, sample color from bbox area
-                x, y, w, h = ball['bbox']
-                x, y, w, h = int(x), int(y), int(w), int(h)
+                # For YOLO detections, use predefined colors based on class name
+                class_name = ball.get('class_name', 'unknown')
+                color = self.ball_colors.get(class_name, (200, 200, 200))  # Default gray if unknown
                 
-                # Make sure bbox is within frame bounds
-                x = max(0, min(x, self.width - 1))
-                y = max(0, min(y, self.height - 1))
-                w = min(w, self.width - x)
-                h = min(h, self.height - y)
-                
-                if w > 0 and h > 0:
-                    # Sample color from center region of bbox
-                    center_x = x + w // 2
-                    center_y = y + h // 2
-                    sample_size = min(w, h) // 3
-                    
-                    x1 = max(0, center_x - sample_size)
-                    y1 = max(0, center_y - sample_size)
-                    x2 = min(self.width, center_x + sample_size)
-                    y2 = min(self.height, center_y + sample_size)
-                    
-                    roi = frame_rgb[y1:y2, x1:x2]
-                    if roi.size > 0:
-                        mean_color = cv2.mean(roi)
-                        color = (int(mean_color[0]), int(mean_color[1]), int(mean_color[2]))
-                    else:
-                        color = (255, 255, 255)  # White fallback
-                else:
-                    color = (255, 255, 255)  # White fallback
-                    
             else:  # color detection
-                # For color detections, use contour mask
+                # For color detections, sample color from the frame using contour mask
                 contour = ball['contour']
                 mask[...] = 0
                 cv2.drawContours(mask, [contour], -1, 255, -1)
@@ -436,11 +427,13 @@ class HybridPoolBallTracker:
             radius = 8
             cv2.circle(final, (cX, cY), radius, color, -1)
             
-            # Black border around ball
-            cv2.circle(final, (cX, cY), radius, 0, 1)
+            # Black border around ball (unless ball is black)
+            border_color = 0 if color != (0, 0, 0) else (255, 255, 255)
+            cv2.circle(final, (cX, cY), radius, border_color, 1)
             
-            # Light reflection
-            cv2.circle(final, (cX - 2, cY - 2), 2, (255, 255, 255), -1)
+            # Light reflection (skip for very dark balls)
+            if color != (0, 0, 0):
+                cv2.circle(final, (cX - 2, cY - 2), 2, (255, 255, 255), -1)
             
             # Add small indicator for detection source (optional debug)
             # if source == 'yolo':
@@ -609,7 +602,7 @@ def main():
     
     video_path = sys.argv[1]
     output_path = sys.argv[2] if len(sys.argv) > 2 else None
-    yolo_confidence = float(sys.argv[3]) if len(sys.argv) > 3 else 0.25
+    yolo_confidence = 0.5
     
     # Validate confidence threshold
     if not 0.0 <= yolo_confidence <= 1.0:
